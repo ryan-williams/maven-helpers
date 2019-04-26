@@ -2,46 +2,73 @@
 
 # Poll Maven Central to determine when an uploaded artifact has been picked up.
 
-if [ $# -lt 3 ]; then
-	echo "Usage: $0 <group> <artifact> <version> [poll-interval seconds]" >&2
-	exit 1
-fi
+parse_fields() {
+	org="$1"
+	artifact="${2}_${3}"
+	version="$4"
+}
 
-org="$1"
-shift
-artifact="$1"
-shift
-version="$1"
-shift
+if [ $# -eq 0 ]; then
+	if ! [ -f build.sbt ] && ! [ -d project ]; then
+		echo "Project doesn't appear to be an SBT project" >&2
+		echo "Usage: $0 <group> <artifact> <version> [poll-interval seconds]" >&2
+		exit 1
+	fi
+
+	echo "Asking SBT for artifact info…"
+	parse_fields $(sbt -Dsbt.log.noformat=true 'show organization name scalaBinaryVersion version' | tail -n 8 | awk 'NR%2==0' | sed -n 's/^\[info\]\s*//p')
+	echo "Received: $org:$artifact:$version"
+else
+	if [ $# -lt 3 ]; then
+		echo "Usage: $0 <group> <artifact> <version> [poll-interval seconds]" >&2
+		exit 1
+	fi
+
+	org="$1"
+	shift
+	artifact="$1"
+	shift
+	version="$1"
+	shift
+fi
 
 if [ $# -gt 0 ]; then
 	interval="$1"
 	shift
 else
-	interval=30
+	interval=60
 fi
 
 org_path="$(echo "$org" | sed 's/\./\//g')"
-
-artifact_url="https://repo1.maven.org/maven2/${org_path}/${artifact}"
 
 response_code() {
 	curl -I "$1" 2>/dev/null | head -n 1 | awk -F' ' '{ print $2 }'
 }
 
-if [ "$(response_code "$artifact_url")" == "404" ]; then
-	echo "Warning: artifact URL not found: $artifact_url" >&2
+releases_url="https://oss.sonatype.org/content/repositories/releases/$org_path/$artifact/$version"
+
+if [ "$(response_code "$releases_url")" == "404" ]; then
+	echo "Error: release not found: $releases_url" >&2
+	exit 1
+else
+	echo "Found release: $releases_url"
 fi
 
 sleep 1
+
+artifact_url="https://repo1.maven.org/maven2/${org_path}/${artifact}"
 
 url="${artifact_url}/${version}/"
 
 echo "Polling $url every $interval seconds…"
 
+start_time="$(date +%s)"
+
 while [ 1 ]; do
 	code="$(response_code "$url")"
-	echo "$(date):	Response code: $code"
+	now="$(date +%s)"
+	elapsed="$(echo "$now-$start_time" | bc)"
+	echo "$(date '+%Y-%m-%d %H:%M:%S') (${elapsed}s): $org:$artifact:$version:	$code"
 	if [ "$code" != "404" ]; then
 		break
 	fi
